@@ -1,0 +1,25 @@
+# The autonomous behaviour layer — roadmap M9, `docs/design/brain-design.md`.
+#
+# An ordinary socket client of `robotd`, the way `padd` is: it reads the state stream and
+# the depth stream, keeps a few slow drives, picks one behaviour at a time, and sends
+# intents. No privileged access, no bus, killable at any moment. The library holds
+# everything that decides; the binary holds everything that talks.
+[package]
+name = "braind"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Autonomous behaviour: drives, behaviours, and the intents they send"
+
+[dependencies]
+duck-ipc-proto = { path = "../duck-ipc-proto" }
+kinematics = { path = "../kinematics" }
+serde.workspace = true
+serde_json.workspace = true
+clap.workspace = true
+tracing.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+# Seeded, tiny, and already in the lock file. The brain must be replayable: same seed, same
+# frames, same decisions — that is what makes a "ten minutes worth watching" test a test.
+fastrand = "2"

@@ -490,6 +490,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "braind"
+version = "0.11.0"
+dependencies = [
+ "clap",
+ "duck-ipc-proto",
+ "fastrand",
+ "kinematics",
+ "serde",
+ "serde_json",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "btd"
 version = "0.11.0"
 dependencies = [
