@@ -685,12 +685,18 @@ impl Active {
                 let err = wrap(self.target_yaw - w.yaw);
                 // "Blocked" is the level beam straight ahead (not the floor rows the head
                 // sees while walking) under 0.3 m for a third of a second.
-                let ahead = if w.radar.fresh(Radar::AHEAD, w.t) {
-                    w.radar.axis[Radar::AHEAD]
+                let (ahead, far_ahead) = if w.radar.fresh(Radar::AHEAD, w.t) {
+                    (w.radar.axis[Radar::AHEAD], w.radar.far[Radar::AHEAD])
                 } else {
-                    None
+                    (None, 9.0)
                 };
-                let room = ahead.unwrap_or(9.0);
+                // A wall across the way reads short on every beam; a side wall grazed at an
+                // angle reads short on one and deep on the rest, and is not "blocked".
+                let room = if far_ahead < 0.7 {
+                    ahead.unwrap_or(9.0)
+                } else {
+                    9.0
+                };
                 if room < 0.30 {
                     self.blocked_since.get_or_insert(w.t);
                 } else {
@@ -761,10 +767,16 @@ impl Active {
                     next(self, 0);
                 } else {
                     let speed = if room < 0.6 { 0.6 } else { 1.0 };
+                    // Hold the corridor's centre line: the lateral offset (left positive)
+                    // from the cell's axis becomes a heading bias, so a duck that drifted
+                    // toward a wall walks back out instead of scraping along it.
+                    let lateral = Self::maze_edge(&self.map, d.left(), pos)
+                        - Self::maze_edge(&self.map, d.right(), pos);
+                    let centring = (0.5 * lateral).clamp(-0.25, 0.25);
                     let steer = if self.kicked && since_check < 0.6 {
                         0.6
                     } else {
-                        (err * 1.5).clamp(-0.6, 0.6)
+                        (err * 1.5 + centring).clamp(-0.6, 0.6)
                     };
                     i.twist = [limits.linear * speed, 0.0, steer];
                     i.head = Some([0.0, 0.1, 0.0, 0.0]);

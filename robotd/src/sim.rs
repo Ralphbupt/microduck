@@ -46,6 +46,10 @@ pub struct SimIo {
     line: String,
     /// The sensors produced by the last `step`, not yet handed to the loop.
     pending: Option<Sensors>,
+    /// Every request carries a sequence number the plant echoes. A reply that arrives after
+    /// its request timed out is then recognised and dropped instead of being taken for the
+    /// answer to the next request — which desynchronised the whole stream once.
+    seq: u64,
     imu_ready: bool,
     pub model: String,
 }
@@ -77,6 +81,7 @@ impl SimIo {
             writer,
             line: String::new(),
             pending: None,
+            seq: 0,
             imu_ready: false,
             model: String::new(),
         };
@@ -95,29 +100,38 @@ impl SimIo {
         Ok(io)
     }
 
-    fn call(&mut self, request: Value) -> Result<Value> {
+    fn call(&mut self, mut request: Value) -> Result<Value> {
         let port = |path: &Path, e: std::io::Error| IoError::Port {
             path: path.display().to_string(),
             source: e,
         };
+        self.seq += 1;
+        let seq = self.seq;
+        request["seq"] = json!(seq);
         let mut line = serde_json::to_string(&request).map_err(|e| IoError::Bus(e.to_string()))?;
         line.push('\n');
         self.writer
             .write_all(line.as_bytes())
             .map_err(|e| port(&self.path, e))?;
-        self.line.clear();
-        match self.reader.read_line(&mut self.line) {
-            Ok(0) => {
-                return Err(IoError::Port {
-                    path: self.path.display().to_string(),
-                    source: std::io::Error::other("plant closed the socket"),
-                });
+        let reply: Value = loop {
+            self.line.clear();
+            match self.reader.read_line(&mut self.line) {
+                Ok(0) => {
+                    return Err(IoError::Port {
+                        path: self.path.display().to_string(),
+                        source: std::io::Error::other("plant closed the socket"),
+                    });
+                }
+                Ok(_) => {}
+                Err(e) => return Err(port(&self.path, e)),
             }
-            Ok(_) => {}
-            Err(e) => return Err(port(&self.path, e)),
-        }
-        let reply: Value = serde_json::from_str(&self.line)
-            .map_err(|e| IoError::Bus(format!("plant reply: {e}")))?;
+            let reply: Value = serde_json::from_str(&self.line)
+                .map_err(|e| IoError::Bus(format!("plant reply: {e}")))?;
+            match reply.get("seq").and_then(Value::as_u64) {
+                Some(got) if got < seq => continue, // a late answer to an earlier request
+                _ => break reply,
+            }
+        };
         if reply.get("ok").and_then(Value::as_bool) != Some(true) {
             let why = reply
                 .get("error")
@@ -226,7 +240,7 @@ mod tests {
                 let req: Value = serde_json::from_str(&line).unwrap();
                 let op = req["op"].as_str().unwrap().to_owned();
                 seen.push(op.clone());
-                let reply = match op.as_str() {
+                let mut reply = match op.as_str() {
                     "hello" => json!({"ok": true, "version": PROTOCOL_VERSION, "model": "walk"}),
                     "read" | "step" => {
                         if op == "step" {
@@ -246,6 +260,7 @@ mod tests {
                     "slow" => json!({"ok": true, "volts": 7.4, "temps_c": vec![32.0; NUM_JOINTS]}),
                     _ => json!({"ok": false, "error": "unknown op"}),
                 };
+                reply["seq"] = req["seq"].clone();
                 writer
                     .write_all(format!("{}\n", serde_json::to_string(&reply).unwrap()).as_bytes())
                     .unwrap();
