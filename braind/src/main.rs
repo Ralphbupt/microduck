@@ -55,6 +55,10 @@ struct Args {
     #[arg(long)]
     maze: bool,
 
+    /// Where the maze mission writes the map it built (`braind-maze.txt` and `.svg`).
+    #[arg(long, default_value = "/tmp")]
+    maze_map_dir: PathBuf,
+
     /// Random seed. Same seed, same frames, same decisions.
     #[arg(long, default_value_t = 7)]
     seed: u64,
@@ -212,6 +216,8 @@ fn main() -> std::process::ExitCode {
     let mut arbiter = Arbiter::new(args.seed, args.on);
     let mut enabled_once = false;
     let mut last_log = Instant::now();
+    let mut last_map_log = Instant::now();
+    let mut last_map_moves = u32::MAX;
     let mut last_twist_sent = false;
     let mut last_status = Status::Off;
 
@@ -238,6 +244,29 @@ fn main() -> std::process::ExitCode {
         }
 
         let decision = arbiter.tick(&world, limits);
+        // The maze mission's map: printed every few moves, written out when it ends.
+        if let Some(map) = arbiter.maze_map() {
+            let ended = matches!(decision.changed, Some((Some(Kind::Maze), _)));
+            if ended {
+                let txt = args.maze_map_dir.join("braind-maze.txt");
+                let svg = args.maze_map_dir.join("braind-maze.svg");
+                let _ = std::fs::write(&txt, map.ascii());
+                let _ = std::fs::write(&svg, map.svg());
+                tracing::info!(
+                    cells = map.cells_known(),
+                    moves = map.moves,
+                    svg = %svg.display(),
+                    "maze: the map as the duck built it\n{}",
+                    map.ascii()
+                );
+            } else if map.moves != last_map_moves
+                && last_map_log.elapsed() >= Duration::from_secs(6)
+            {
+                last_map_moves = map.moves;
+                last_map_log = Instant::now();
+                tracing::info!(moves = map.moves, "maze: map so far\n{}", map.ascii());
+            }
+        }
         if let Some((from, to)) = decision.changed {
             tracing::info!(
                 from = from.map(Kind::name).unwrap_or("-"),

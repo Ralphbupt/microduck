@@ -51,6 +51,8 @@ pub struct Arbiter {
     entered: bool,
     /// The maze was solved once; the mission does not restart.
     pub maze_solved: bool,
+    /// The map the last maze mission built, kept after it ends for drawing.
+    pub last_maze: Option<crate::maze::MazeMap>,
     /// The last frame's novelty count, so a new cell is noticed once.
     cells_seen: usize,
     cooldown: std::collections::HashMap<Kind, f64>,
@@ -82,6 +84,7 @@ impl Arbiter {
             last_t: None,
             entered: false,
             maze_solved: false,
+            last_maze: None,
             cells_seen: 0,
             cooldown: Default::default(),
         }
@@ -89,6 +92,14 @@ impl Arbiter {
 
     pub fn active_kind(&self) -> Option<Kind> {
         self.active.as_ref().map(|a| a.kind)
+    }
+
+    /// The maze map while the mission runs (for the log), else the last one.
+    pub fn maze_map(&self) -> Option<&crate::maze::MazeMap> {
+        match &self.active {
+            Some(a) if a.kind == Kind::Maze => Some(&a.map),
+            _ => self.last_maze.as_ref(),
+        }
     }
 
     pub fn tick(&mut self, w: &World, limits: Limits) -> Decision {
@@ -204,6 +215,7 @@ impl Arbiter {
         if step.done {
             if kind == Kind::Maze {
                 self.maze_solved = true;
+                self.last_maze = Some(active.map.clone());
             }
             self.leave(w, kind);
             let mut out = Active::neutral();

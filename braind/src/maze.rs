@@ -104,6 +104,8 @@ pub struct MazeMap {
     /// The cells behind us, most recent last: depth-first backtracking pops these.
     trail: Vec<(i32, i32)>,
     pub moves: u32,
+    /// Every cell entered, in order — the route, for drawing.
+    pub path: Vec<(i32, i32)>,
 }
 
 impl Default for Dir {
@@ -129,6 +131,7 @@ impl MazeMap {
     pub fn new() -> Self {
         let mut m = Self::default();
         m.cells.entry((0, 0)).or_default().visits = 1;
+        m.path.push((0, 0));
         m
     }
 
@@ -179,6 +182,7 @@ impl MazeMap {
         }
         self.at = arrived;
         self.facing = d;
+        self.path.push(arrived);
         self.cells.entry(arrived).or_default().visits += 1;
         // The way we came is open, whatever we thought.
         self.cells.entry(arrived).or_default().sides[d.back().index()] = Some(Side::Open);
@@ -276,9 +280,207 @@ impl MazeMap {
     }
 }
 
+impl MazeMap {
+    /// The box around every cell the duck stood in.
+    fn bounds(&self) -> ((i32, i32), (i32, i32)) {
+        let visited: Vec<(i32, i32)> = self
+            .cells
+            .iter()
+            .filter(|(_, c)| c.visits > 0)
+            .map(|(&k, _)| k)
+            .collect();
+        let xs = visited.iter().map(|c| c.0);
+        let ys = visited.iter().map(|c| c.1);
+        (
+            (xs.clone().min().unwrap_or(0), xs.max().unwrap_or(0)),
+            (ys.clone().min().unwrap_or(0), ys.max().unwrap_or(0)),
+        )
+    }
+
+    fn visited(&self, c: (i32, i32)) -> bool {
+        self.cell(c).visits > 0
+    }
+
+    /// The edge between cell `c` and its neighbour in direction `d`, as either side recorded
+    /// it — a wall seen from one cell is the same wall from the other.
+    pub fn edge(&self, c: (i32, i32), d: Dir) -> Side {
+        let mine = self.cell(c).side(d);
+        if mine != Side::Unknown {
+            return mine;
+        }
+        self.cell(d.step(c)).side(d.back())
+    }
+
+    /// The map as the duck believes it, in the generator's notation: `--` a wall, spaces an
+    /// opening, `··` a side never looked at; cells show their visit count, `@` is the duck.
+    /// Rows run north to south so it reads like the room seen from above.
+    pub fn ascii(&self) -> String {
+        let ((x0, x1), (y0, y1)) = self.bounds();
+        let horizontal = |c: (i32, i32), d: Dir| -> &str {
+            if !self.visited(c) && !self.visited(d.step(c)) {
+                return "  ";
+            }
+            match self.edge(c, d) {
+                Side::Wall => "--",
+                Side::Open => "  ",
+                Side::Outside => "^^",
+                Side::Unknown => "··",
+            }
+        };
+        let vertical = |c: (i32, i32), d: Dir| -> char {
+            if !self.visited(c) && !self.visited(d.step(c)) {
+                return ' ';
+            }
+            match self.edge(c, d) {
+                Side::Wall => '|',
+                Side::Open => ' ',
+                Side::Outside => '>',
+                Side::Unknown => ':',
+            }
+        };
+        let mut out = String::new();
+        for y in (y0..=y1).rev() {
+            let mut top = String::from("+");
+            for x in x0..=x1 {
+                top.push_str(horizontal((x, y), Dir::North));
+                top.push('+');
+            }
+            out.push_str(&top);
+            out.push('\n');
+            let mut row = String::new();
+            for x in x0..=x1 {
+                let c = (x, y);
+                row.push(vertical(c, Dir::West));
+                let body = if c == self.at {
+                    "@ ".to_owned()
+                } else if self.visited(c) {
+                    format!("{} ", self.cell(c).visits)
+                } else {
+                    "  ".to_owned()
+                };
+                row.push_str(&body);
+            }
+            row.push(vertical((x1, y), Dir::East));
+            out.push_str(&row);
+            out.push('\n');
+        }
+        let mut bottom = String::from("+");
+        for x in x0..=x1 {
+            bottom.push_str(horizontal((x, y0), Dir::South));
+            bottom.push('+');
+        }
+        out.push_str(&bottom);
+        out.push('\n');
+        out
+    }
+
+    /// The same map as an SVG: walls solid, unlooked sides dotted, visited cells shaded by
+    /// visits, the route as a line from the green start to the gold end.
+    pub fn svg(&self) -> String {
+        const S: f64 = 60.0;
+        const M: f64 = 30.0;
+        let ((x0, x1), (y0, y1)) = self.bounds();
+        let w = (x1 - x0 + 1) as f64 * S + 2.0 * M;
+        let h = (y1 - y0 + 1) as f64 * S + 2.0 * M + 16.0;
+        // Cell (x, y) -> its top-left corner on the page (y up in the maze, down on the page).
+        let px = |x: i32| M + (x - x0) as f64 * S;
+        let py = |y: i32| M + (y1 - y) as f64 * S;
+        let mut out = format!(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{w}\" height=\"{h}\" viewBox=\"0 0 {w} {h}\" font-family=\"sans-serif\">\n<rect width=\"{w}\" height=\"{h}\" fill=\"#fafaf7\"/>\n"
+        );
+        for y in y0..=y1 {
+            for x in x0..=x1 {
+                let c = (x, y);
+                if !self.visited(c) {
+                    continue;
+                }
+                let (cx, cy) = (px(x), py(y));
+                let shade = match self.cell(c).visits {
+                    1 => "#dbe9f6",
+                    2 => "#b7d3ee",
+                    _ => "#8fbbe3",
+                };
+                out.push_str(&format!(
+                    "<rect x=\"{cx}\" y=\"{cy}\" width=\"{S}\" height=\"{S}\" fill=\"{shade}\"/>\n"
+                ));
+                let edges = [
+                    (Dir::North, (cx, cy, cx + S, cy)),
+                    (Dir::South, (cx, cy + S, cx + S, cy + S)),
+                    (Dir::West, (cx, cy, cx, cy + S)),
+                    (Dir::East, (cx + S, cy, cx + S, cy + S)),
+                ];
+                for (d, (ax, ay, bx, by)) in edges {
+                    let style = match self.edge(c, d) {
+                        Side::Wall => "stroke=\"#333\" stroke-width=\"4\"",
+                        Side::Open => continue,
+                        Side::Outside => {
+                            "stroke=\"#2a9d3f\" stroke-width=\"4\" stroke-dasharray=\"2 6\""
+                        }
+                        Side::Unknown => {
+                            "stroke=\"#bbb\" stroke-width=\"2\" stroke-dasharray=\"3 5\""
+                        }
+                    };
+                    out.push_str(&format!(
+                        "<line x1=\"{ax}\" y1=\"{ay}\" x2=\"{bx}\" y2=\"{by}\" {style} stroke-linecap=\"round\"/>\n"
+                    ));
+                }
+            }
+        }
+        if self.path.len() > 1 {
+            let pts: Vec<String> = self
+                .path
+                .iter()
+                .map(|c| format!("{},{}", px(c.0) + S / 2.0, py(c.1) + S / 2.0))
+                .collect();
+            out.push_str(&format!(
+                "<polyline points=\"{}\" fill=\"none\" stroke=\"#e07b39\" stroke-width=\"3\" stroke-linejoin=\"round\" opacity=\"0.85\"/>\n",
+                pts.join(" ")
+            ));
+        }
+        if let Some(first) = self.path.first() {
+            out.push_str(&format!(
+                "<circle cx=\"{}\" cy=\"{}\" r=\"9\" fill=\"#2a9d3f\"/>\n",
+                px(first.0) + S / 2.0,
+                py(first.1) + S / 2.0
+            ));
+        }
+        out.push_str(&format!(
+            "<circle cx=\"{}\" cy=\"{}\" r=\"9\" fill=\"#e6b422\" stroke=\"#333\" stroke-width=\"2\"/>\n",
+            px(self.at.0) + S / 2.0,
+            py(self.at.1) + S / 2.0
+        ));
+        let visited = self.cells.values().filter(|c| c.visits > 0).count();
+        out.push_str(&format!(
+            "<text x=\"{M}\" y=\"{}\" font-size=\"12\" fill=\"#555\">{visited} cells walked · {} moves · dotted = never looked · green = outside</text>\n</svg>\n",
+            h - 6.0,
+            self.moves
+        ));
+        out
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_ascii_map_reads_like_the_generator() {
+        let mut m = MazeMap::at_entrance();
+        m.observe(Dir::East, Side::Open);
+        m.moved(Dir::East, (1, 0));
+        m.observe(Dir::North, Side::Wall);
+        m.observe(Dir::East, Side::Open);
+        let text = m.ascii();
+        assert!(text.contains('@'), "{text}");
+        assert!(text.contains("--"), "{text}");
+        assert!(text.contains("··"), "an unlooked side is dotted: {text}");
+        let svg = m.svg();
+        assert!(
+            svg.starts_with("<svg")
+                && svg.contains("<polyline")
+                && svg.contains("stroke-dasharray")
+        );
+    }
 
     /// A 3x3 maze as a wall oracle:
     ///   +--+--+  +      exit north of (2,2)

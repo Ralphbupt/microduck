@@ -235,7 +235,7 @@ pub struct Active {
     /// Maze: where the current leg started (odom x, y), the map, what we are looking at
     /// or heading for, and how many sides of the current cell looked like open country.
     anchor: [f64; 2],
-    map: MazeMap,
+    pub map: MazeMap,
     /// Correction added to odometry, learned from walls: a wall of this cell seen at range
     /// r must be at the cell's edge, so the difference is odometry drift along that axis.
     odom_fix: [f64; 2],
