@@ -22,6 +22,7 @@ mod chorale;
 mod control;
 mod intents;
 mod params;
+mod sim;
 mod soc;
 mod sound;
 mod theremin;
@@ -235,6 +236,12 @@ struct Args {
     /// every tick after — restarting MuJoCo must not mean restarting the duck.
     #[arg(long, conflicts_with = "fake")]
     sim: Option<String>,
+
+    /// Run against the Python MuJoCo plant in `microduck_rl` (`scripts/plant_server.py`),
+    /// at this unix socket: lockstep physics, a depth sensor on a second socket, an
+    /// off-screen recorder. The other simulator; `docs/design/sim-backend-design.md`.
+    #[arg(long, value_name = "SOCKET", conflicts_with_all = ["fake", "sim"])]
+    plant: Option<PathBuf>,
 
     /// Do not load a policy: run the loop and hold the startup pose.
     ///
@@ -1061,6 +1068,7 @@ fn spawn_control_thread(
     let period = params.period();
     let fake = args.fake;
     let sim = args.sim.clone();
+    let plant = args.plant.clone();
     let port = params.bus.port.clone();
     let params = params.clone();
     // So a reload can re-read `[policy]` without a restart. The path rather than the loaded
@@ -1116,6 +1124,17 @@ fn spawn_control_thread(
                 return;
             }
 
+            if let Some(socket) = plant {
+                // Same waiting discipline as the bus below: a plant that is not up yet is a
+                // condition someone fixes by starting it, not one to abandon the loop over.
+                runtime.block_on(async move {
+                    if let Some(io) = open_sim_waiting(&socket, &state).await {
+                        control_loop(io, state, intents, params, params_path, period, poweroff).await;
+                    }
+                });
+                return;
+            }
+
             // Waiting, not one shot. `open_bus` verifies motor registers, which means it
             // talks to the servos — so on an unpowered board it fails and this used to fall
             // straight off the end of the thread. No control loop was ever created, and
@@ -1128,6 +1147,31 @@ fn spawn_control_thread(
                 }
             });
         })
+}
+
+/// Connect to the MuJoCo plant, waiting for it to be there. The sim's twin of
+/// [`open_bus_waiting`]; it publishes `startup_bus_failures` the same way, so `robot.health`
+/// says "no robot on the motor bus" until the plant answers — which is true.
+async fn open_sim_waiting(socket: &Path, state: &RobotState) -> Option<sim::SimIo> {
+    let mut attempt = 0u32;
+    while !state.shutdown.load(Ordering::Relaxed) {
+        match sim::SimIo::connect(socket) {
+            Ok(io) => {
+                tracing::warn!(socket = %socket.display(), model = %io.model, "--plant: MuJoCo plant connected");
+                state.startup_bus_failures.store(0, Ordering::Relaxed);
+                return Some(io);
+            }
+            Err(e) => {
+                if attempt == 0 || attempt.is_multiple_of(STARTUP_READ_LOG_EVERY) {
+                    tracing::warn!(socket = %socket.display(), error = %e, attempt, "--plant: no plant yet; waiting");
+                }
+            }
+        }
+        attempt += 1;
+        state.startup_bus_failures.store(attempt, Ordering::Relaxed);
+        tokio::time::sleep(STARTUP_RETRY_INTERVAL).await;
+    }
+    None
 }
 
 /// The real bus on the board; a fake elsewhere, so `open_bus_waiting` has one signature.

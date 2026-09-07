@@ -1,0 +1,9 @@
+[policy]
+mode = "roller"
+walk = "/Users/liko/microduck/microduck_rl/policies/roller.onnx"
+stand = "/Users/liko/microduck/microduck_rl/policies/alpha_stand.onnx"
+sitstand = "/Users/liko/microduck/microduck_rl/policies/alpha_sitstand.onnx"
+ground_pick = "/Users/liko/microduck/microduck_rl/policies/roller_crouch.onnx"
+kick_left = "/Users/liko/microduck/microduck_rl/policies/ball_kick_left.onnx"
+kick_right = "/Users/liko/microduck/microduck_rl/policies/ball_kick_right.onnx"
+roulade = "/Users/liko/microduck/microduck_rl/policies/roulade.onnx"
