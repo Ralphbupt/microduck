@@ -270,7 +270,7 @@ impl Active {
             fired: false,
             speed: 1.0,
             anchor: [w.odom[0], w.odom[1]],
-            map: MazeMap::new(),
+            map: MazeMap::at_entrance(),
             odom_fix: [0.0; 2],
             stucks: 0,
             walk_check: (0.0, [0.0; 2]),

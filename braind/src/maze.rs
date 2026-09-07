@@ -132,6 +132,18 @@ impl MazeMap {
         m
     }
 
+    /// The mission's start: outside the maze, facing the entrance. The way in is ahead; the
+    /// other three sides of the start cell are declared walls so exploration and backtracking
+    /// never leave the maze by the way they came.
+    pub fn at_entrance() -> Self {
+        let mut m = Self::new();
+        let cell = m.cells.entry((0, 0)).or_default();
+        for d in [Dir::East.left(), Dir::East.right(), Dir::East.back()] {
+            cell.sides[d.index()] = Some(Side::Wall);
+        }
+        m
+    }
+
     /// Snap odometry to the grid; the heading to the nearest axis.
     pub fn localise(&mut self, odom_x: f64, odom_y: f64, yaw: f64) {
         self.at = (
