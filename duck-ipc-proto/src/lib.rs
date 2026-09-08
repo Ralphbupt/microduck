@@ -293,6 +293,14 @@ pub const JSONRPC_VERSION: &str = "2.0";
 /// onto the same monotonic axis. Additive everywhere: an older client ignores fields it does
 /// not know, and an older daemon leaves them at their defaults (zero, or absent).
 ///
+/// # v26 — `RobotState.events`
+///
+/// What happened since the last frame — ambient noise or voice, petting, a duck's beacon
+/// arriving or going stale, the chorale's beat — carried on the state frame, absent from the
+/// wire when empty. A subscriber that skips frames (`hz`) still gets every event: they
+/// accumulate onto the next frame it is sent. The autonomous brain (`braind`) is the consumer.
+/// Additive.
+///
 /// # v25 — the whole skeleton's pose, for a viewer
 ///
 /// [`RobotState::skeleton`] carries every body's pose in the trunk frame this tick, and
@@ -301,7 +309,7 @@ pub const JSONRPC_VERSION: &str = "2.0";
 /// [`RobotState::frames`] (camera, ToF, head IMU) is a few leaves — without carrying a copy of the
 /// kinematics, the same reason `frames` and `tof_beams` come from the robot. Both from the same FK
 /// `robot.look` uses. Additive: the `Vec`s are empty from a daemon predating it.
-pub const API_VERSION: u32 = 25;
+pub const API_VERSION: u32 = 26;
 
 /// The observation width every policy this robot family runs is built against.
 ///
@@ -3362,6 +3370,12 @@ pub struct RobotState {
     /// for real. `frames` is a few leaves of this. Empty from a daemon predating it. (v25)
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub skeleton: Vec<PoseState>,
+    /// What happened since the last frame: ambient sounds, petting, ducks arriving and
+    /// leaving, the chorale's beat. Empty most ticks, and absent from the wire then. A
+    /// subscriber that skips frames (`hz`) still gets every event: they accumulate onto
+    /// the next frame it is sent. The autonomous brain is the consumer.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub events: Vec<RobotEvent>,
 }
 
 /// The trunk IMU, in [`RobotState::imu`]. Trunk frame: x forward, y left, z up.
@@ -4249,6 +4263,33 @@ pub struct HeadImuFrame {
     pub quat: [f32; 4],
     /// Chip temperature, °C.
     pub temp_c: f32,
+}
+
+/// Something that happened, carried on [`RobotState::events`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EventKind {
+    /// A short loud sound that was not a voice.
+    SoundNoise,
+    /// Someone talking near the robot.
+    SoundVoice,
+    PetStart,
+    PetEnd,
+    /// A duck's beacon appeared; `id` names it.
+    DuckSeen,
+    /// That duck's beacon has been silent for a while; `id` names it.
+    DuckLost,
+    /// The chorale's beat turned over while this duck was singing or following.
+    Beat,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RobotEvent {
+    pub kind: EventKind,
+    /// A duck id for `duck_seen` / `duck_lost`; absent otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<u16>,
 }
 
 /// See [`method::ROBOT_CHORALE`].
@@ -5498,6 +5539,7 @@ mod tests {
             imu: None,
             frames: None,
             skeleton: Vec::new(),
+            events: Vec::new(),
             movement: MoveState {
                 requested: [0.0; 3],
                 applied: [0.0; 3],
@@ -5520,6 +5562,7 @@ mod tests {
             odom: OdomState::default(),
             theremin: None,
             chorale: None,
+            events: Vec::new(),
         };
         let down = serde_json::to_string(&state).unwrap();
         assert!(!down.contains("theremin"), "{down}");
@@ -5559,6 +5602,7 @@ mod tests {
             imu: None,
             frames: None,
             skeleton: Vec::new(),
+            events: Vec::new(),
             movement: MoveState {
                 requested: [0.4, 0.0, 0.0],
                 applied: [0.15, 0.0, 0.0],
@@ -5581,6 +5625,7 @@ mod tests {
             odom: OdomState::default(),
             theremin: None,
             chorale: None,
+            events: Vec::new(),
         };
 
         let line = serde_json::to_string(&Request::notify_state(&state)).unwrap();

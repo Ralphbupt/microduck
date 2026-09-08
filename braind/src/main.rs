@@ -21,6 +21,7 @@ use std::time::{Duration, Instant};
 use braind::{Arbiter, Kind, Limits, Mode, Status, World};
 use clap::Parser;
 use duck_ipc_proto::{self as proto, Call, Request, Response};
+use duck_ipc_proto::{EventKind, RobotEvent};
 
 const RECONNECT: Duration = Duration::from_secs(2);
 const TICK: Duration = Duration::from_millis(50);
@@ -54,6 +55,12 @@ struct Args {
     /// The mission: the plant's `--model maze`. Solve it by the right-hand rule, then live.
     #[arg(long)]
     maze: bool,
+
+    /// Bench only: a file whose appended lines are events to feed the brain as if the robot
+    /// had reported them — `pet_start`, `pet_end`, `sound_noise`, `sound_voice`, `beat`,
+    /// `duck_seen 7`, `duck_lost 7`. `echo pet_start >> FILE` while it runs.
+    #[arg(long)]
+    events_from: Option<PathBuf>,
 
     /// Where the maze mission writes the map it built (`braind-maze.txt` and `.svg`).
     #[arg(long, default_value = "/tmp")]
@@ -101,19 +108,23 @@ impl Prompt {
     }
 }
 
+/// The newest state frame, and every event since the brain last looked — a frame's events
+/// must not vanish because the next frame overwrote it before the brain read it.
+type StateSlot = Arc<Mutex<(Option<proto::RobotState>, Vec<RobotEvent>)>>;
+
 /// Park on `robot.state`, forever; the newest frame lands in the slot.
-fn state_stream(socket: PathBuf, slot: Arc<Mutex<Option<proto::RobotState>>>) {
+fn state_stream(socket: PathBuf, slot: StateSlot) {
     loop {
         match stream_states(&socket, &slot) {
             Ok(()) => tracing::warn!("state stream ended"),
             Err(e) => tracing::warn!(error = %e, "state stream"),
         }
-        *slot.lock().unwrap() = None;
+        slot.lock().unwrap().0 = None;
         std::thread::sleep(RECONNECT);
     }
 }
 
-fn stream_states(socket: &Path, slot: &Mutex<Option<proto::RobotState>>) -> std::io::Result<()> {
+fn stream_states(socket: &Path, slot: &StateSlot) -> std::io::Result<()> {
     let stream = UnixStream::connect(socket)?;
     let mut writer = stream.try_clone()?;
     let sub = Request::call(
@@ -127,10 +138,44 @@ fn stream_states(socket: &Path, slot: &Mutex<Option<proto::RobotState>>) -> std:
         if let Ok(req) = serde_json::from_str::<Request>(&line)
             && let Some(state) = req.as_state()
         {
-            *slot.lock().unwrap() = Some(state);
+            let mut guard = slot.lock().unwrap();
+            guard.1.extend(state.events.iter().copied());
+            guard.0 = Some(state);
         }
     }
     Ok(())
+}
+
+/// Bench events: tail a file, one event per appended line.
+fn events_file(path: PathBuf, slot: StateSlot) {
+    let mut read = 0usize;
+    loop {
+        std::thread::sleep(Duration::from_millis(100));
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let lines: Vec<&str> = text.lines().collect();
+        if lines.len() < read {
+            read = 0; // truncated: start over
+        }
+        for line in &lines[read..] {
+            let mut words = line.split_whitespace();
+            let kind = match words.next() {
+                Some("pet_start") => EventKind::PetStart,
+                Some("pet_end") => EventKind::PetEnd,
+                Some("sound_noise") => EventKind::SoundNoise,
+                Some("sound_voice") => EventKind::SoundVoice,
+                Some("beat") => EventKind::Beat,
+                Some("duck_seen") => EventKind::DuckSeen,
+                Some("duck_lost") => EventKind::DuckLost,
+                _ => continue,
+            };
+            let id = words.next().and_then(|w| w.parse().ok());
+            slot.lock().unwrap().1.push(RobotEvent { kind, id });
+            tracing::info!(?kind, id, "bench event");
+        }
+        read = lines.len();
+    }
 }
 
 /// Park on `tof.frame`, forever — the theremin's pattern, one level up.
@@ -195,12 +240,16 @@ fn main() -> std::process::ExitCode {
     let limits = Limits::for_mode(mode, args.max_linear);
     tracing::warn!(?mode, on = args.on, tof = args.tof.is_some(), "braind up");
 
-    let states = Arc::new(Mutex::new(None));
+    let states: StateSlot = Arc::new(Mutex::new((None, Vec::new())));
     std::thread::spawn({
         let socket = args.socket.clone();
         let slot = states.clone();
         move || state_stream(socket, slot)
     });
+    if let Some(path) = args.events_from.clone() {
+        let slot = states.clone();
+        std::thread::spawn(move || events_file(path, slot));
+    }
     let frames = Arc::new(Mutex::new(None));
     if let Some(tof) = args.tof.clone() {
         let slot = frames.clone();
@@ -223,8 +272,13 @@ fn main() -> std::process::ExitCode {
 
     loop {
         let tick_start = Instant::now();
-        if let Some(state) = states.lock().unwrap().as_ref() {
-            world.observe_state(state);
+        {
+            let mut guard = states.lock().unwrap();
+            let events = std::mem::take(&mut guard.1);
+            if let Some(state) = guard.0.as_ref() {
+                world.observe_state(state);
+            }
+            world.observe_events(&events);
         }
         if let Some((frame, at)) = frames.lock().unwrap().as_ref() {
             world.observe_tof(frame, &reprojector, at.elapsed().as_secs_f64());
@@ -244,6 +298,11 @@ fn main() -> std::process::ExitCode {
         }
 
         let decision = arbiter.tick(&world, limits);
+        if matches!(decision.changed, Some((_, Some(Kind::Greet))))
+            && let Some((id, _)) = world.greet_pending.take()
+        {
+            world.known_ducks.insert(id);
+        }
         // The maze mission's map: printed every few moves, written out when it ends.
         if let Some(map) = arbiter.maze_map() {
             let ended = matches!(decision.changed, Some((Some(Kind::Maze), _)));

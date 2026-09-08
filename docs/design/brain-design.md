@@ -83,11 +83,13 @@ land:
 | Nap | ✓ | sit (`sit_toggle`), quiet, energy recovers, wakes on sound/pet | — |
 | Startle | ✓ | freeze, head up, `alarm`; from a sudden close ToF hit or a loud noise | ToF, sound |
 | GroundPick | ✓ | the skill, when curiosity is high and the floor ahead is clear | — |
-| Petted | v2 | lean in, `coo`, stay still while it lasts | pet events |
+| Petted | ✓ | lean in, `coo`, stay still while it lasts; outbids a startle | pet events |
+| Startle by sound | ✓ | a loud noise, unless being petted | sound events |
+| Dance | ✓ | bob, sway and nod on the beat while beats keep coming | beat events |
+| Greet | ✓ | a duck's beacon appears: `greet` for a stranger, `chirp` for a friend, then it is known | duck events |
+| Lonely | ✓ | alone for three minutes with low social drive: an `inquire` call, rarely | events (absence) |
 | BallPlay | v2 | approach / line up / kick, from a ball the ToF sees as a low, round hit | ToF (sim: ball scene) |
-| Dance | v2 | on a heard beat; becomes synchronised with company | beat events |
 | Held | dropped | pickup detection is deprecated in the runtime; nothing feeds it | — |
-| Greet · Lonely | v2 | beacons: a sound for a stranger, another for a friend, a call when alone | chorale.heard |
 | Sing | v2 | the chorale as a decision: rare, gated on company and mood | `robot.chorale` |
 
 v1 is what runs in the sim on day one and what "ten minutes worth watching" is measured
@@ -103,19 +105,24 @@ against. Everything in v2 needs one of the wire additions in §4.2.
 - `tof.stream` → `tof.frame`, from `tofd` on the robot or the plant in the sim.
 - `robot.mode` (walk/roller) shapes speeds exactly as `padd` shapes sticks.
 
-### 4.2 To be put on the wire (API v17)
+### 4.2 Events on the state frame (API v17, built)
 
-One new notification on the state-stream connection, `robot.event`:
+Not a new notification: a new field. `RobotState.events` carries what happened since the
+last frame, absent from the wire when empty:
 
 ```json
-{"jsonrpc":"2.0","method":"robot.event","params":{"t":12.34,"kind":"sound_voice"}}
+"events": [{"kind":"sound_voice"}, {"kind":"duck_seen","id":7}]
 ```
 
 `kind ∈ sound_noise · sound_voice · pet_start · pet_end · beat · duck_seen · duck_lost`.
-`robotd` already has every one of these in hand (`pet.try_recv_sound`, the petting events,
-the chorale's heard beacons and beat); today it logs them at debug "until the autonomous
-brain arrives". Emitting them costs one `broadcast::send` each. `duck_seen/lost` carry the
-beacon `id`. This is the whole change to `robotd` for the brain, and it is additive.
+`robotd` had every one in hand (`pet.try_recv_sound`, the petting events, the chorale's
+peers and beat); they now ride on the frame, in order with the state they belong to. A
+subscriber that skips frames (`hz`) loses none: events on skipped frames accumulate onto the
+next frame it is sent. Riding on the frame rather than a separate notification kept the
+subscriber loop's nested selects untouched and the wire additive.
+
+On a bench, `braind --events-from FILE` feeds the same events from appended lines
+(`echo pet_start >> FILE`), since the plant has no microphone.
 
 ### 4.3 Not available, and not waited for
 

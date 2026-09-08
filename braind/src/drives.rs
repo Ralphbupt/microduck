@@ -64,6 +64,16 @@ impl Drives {
             self.curiosity = clamp(self.curiosity + CURIOSITY_RISE * dt);
         }
 
+        // Being petted is what comfort is for; company is what social is for.
+        if world.petting() {
+            self.comfort = clamp(self.comfort + 0.08 * dt);
+        }
+        if world.company() > 0 || world.voice_age().is_some_and(|a| a < 10.0) {
+            self.social = clamp(self.social + dt / 60.0);
+        } else {
+            self.social = clamp(self.social - dt / 300.0);
+        }
+
         // Comfort drifts back to the middle from either side.
         let toward = 0.5 - self.comfort;
         self.comfort = clamp(self.comfort + toward.signum() * toward.abs().min(COMFORT_RELAX * dt));

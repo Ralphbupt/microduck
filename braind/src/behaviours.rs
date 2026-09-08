@@ -66,10 +66,18 @@ pub enum Kind {
     GroundPick,
     /// The mission: get out of the maze by the right-hand rule, glancing with the head.
     Maze,
+    /// Someone is stroking the duck: lean in, coo, stay still.
+    Petted,
+    /// Beats are arriving: bob, sway, nod on them.
+    Dance,
+    /// Another duck's beacon just appeared: a sound for a stranger, another for a friend.
+    Greet,
+    /// Nobody around for a long while: call out.
+    Lonely,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 13] = [
+    pub const ALL: [Kind; 17] = [
         Kind::Chill,
         Kind::LookAround,
         Kind::Wander,
@@ -83,6 +91,10 @@ impl Kind {
         Kind::Startle,
         Kind::GroundPick,
         Kind::Maze,
+        Kind::Petted,
+        Kind::Dance,
+        Kind::Greet,
+        Kind::Lonely,
     ];
 
     pub fn name(self) -> &'static str {
@@ -100,6 +112,10 @@ impl Kind {
             Kind::Startle => "startle",
             Kind::GroundPick => "ground_pick",
             Kind::Maze => "maze",
+            Kind::Petted => "petted",
+            Kind::Dance => "dance",
+            Kind::Greet => "greet",
+            Kind::Lonely => "lonely",
         }
     }
 
@@ -117,12 +133,16 @@ impl Kind {
             Kind::Startle => 1.5,
             Kind::GroundPick => 6.0,
             Kind::Maze => 600.0,
+            Kind::Petted => 2.0,
+            Kind::Dance => 6.0,
+            Kind::Greet => 2.5,
+            Kind::Lonely => 3.0,
         }
     }
 
     /// A reflex may cut a dwell short.
     pub fn is_reflex(self) -> bool {
-        matches!(self, Kind::Startle)
+        matches!(self, Kind::Startle | Kind::Petted | Kind::Greet)
     }
 
     /// Energy cost per second at full tilt (drives::ENERGY_DRAIN_PER_ACTIVITY × this).
@@ -133,6 +153,9 @@ impl Kind {
             Kind::TurnInPlace | Kind::Startle => 0.3,
             Kind::Wander | Kind::GroundPick | Kind::Maze => 0.5,
             Kind::Zoomies => 1.0,
+            Kind::Petted => 0.0,
+            Kind::Dance => 0.3,
+            Kind::Greet | Kind::Lonely => 0.1,
         }
     }
 }
@@ -189,6 +212,10 @@ pub fn score(
             }
         }
         Kind::Startle => {
+            // A loud noise startles, unless the duck is being petted (then it is a pat).
+            if w.noise_age().is_some_and(|a| a < 0.4) && !w.petting() {
+                return Some(1.5);
+            }
             // A thing that *came at* the duck, not a wall the head turned toward: only with
             // the head near straight ahead does a closing range count.
             let head_straight = w.head[2].abs() < 0.3 && w.head[1] < 0.3;
@@ -215,6 +242,32 @@ pub fn score(
                 return None;
             }
             2.0
+        }
+        // Being petted beats a startle: a hand on the back is not a threat.
+        Kind::Petted => {
+            if w.petting() {
+                1.6
+            } else {
+                return None;
+            }
+        }
+        Kind::Dance => {
+            if w.beat_period().is_none() {
+                return None;
+            }
+            0.9 + 0.2 * d.energy + jitter(0.1)
+        }
+        Kind::Greet => {
+            if w.greet_pending.is_none() {
+                return None;
+            }
+            1.4
+        }
+        Kind::Lonely => {
+            if w.alone_for() < 180.0 || d.social > 0.3 || w.company() > 0 {
+                return None;
+            }
+            0.25 + jitter(0.25)
         }
     })
 }
@@ -294,6 +347,14 @@ impl Active {
             }
             Kind::LookAround => a.head_target = random_gaze(rng),
             Kind::Zoomies => a.speed = 1.0,
+            // A friend is a negative "speed": the one scalar the gesture needs.
+            Kind::Greet => {
+                a.speed = if w.greet_pending.is_some_and(|(_, stranger)| stranger) {
+                    1.0
+                } else {
+                    -1.0
+                }
+            }
             _ => {}
         }
         a
@@ -432,6 +493,60 @@ impl Active {
                     [0.0; 3]
                 };
                 done = age > 1.5;
+            }
+            Kind::Petted => {
+                // Lean into the hand: a little lower, head forward and down, a quiet coo.
+                i.pose = Some((-0.008, 0.0, 0.08));
+                i.head = Some([0.25, 0.35, 0.0, 0.0]);
+                i.mouth = Some(((age * 3.0).sin() * 0.5 + 0.5) * 0.15);
+                if !self.fired {
+                    i.sound = Some(SoundTag::Coo);
+                    self.fired = true;
+                }
+                done = !w.petting() && w.pet_ended.is_some_and(|t| w.t - t > 1.0);
+            }
+            Kind::Dance => {
+                // Bob and sway on the beat; the phase comes from the last beat heard.
+                match (w.beat_period(), w.beats.last()) {
+                    (Some(period), Some(&last)) if period > 0.1 => {
+                        let phase = ((w.t - last) / period) * std::f64::consts::TAU;
+                        i.pose =
+                            Some((0.006 * phase.sin() - 0.003, 0.12 * (phase / 2.0).sin(), 0.0));
+                        i.head = Some([
+                            0.0,
+                            0.15 * phase.cos(),
+                            0.35 * (phase / 2.0).cos(),
+                            0.1 * phase.sin(),
+                        ]);
+                    }
+                    _ => done = true,
+                }
+                if !self.fired {
+                    i.sound = Some(SoundTag::Chirp);
+                    self.fired = true;
+                }
+            }
+            Kind::Greet => {
+                // Head up, a call — `greet` for a stranger, `chirp` for a friend — then note
+                // that this duck is known.
+                i.head = Some([-0.2, -0.3, 0.0, 0.0]);
+                if !self.fired {
+                    self.fired = true;
+                    i.sound = Some(if self.speed < 0.0 {
+                        SoundTag::Chirp
+                    } else {
+                        SoundTag::Greet
+                    });
+                }
+                done = age > 2.5;
+            }
+            Kind::Lonely => {
+                i.head = Some([0.0, -0.1, 0.8 * (age * 1.2).sin(), 0.0]);
+                if !self.fired {
+                    i.sound = Some(SoundTag::Inquire);
+                    self.fired = true;
+                }
+                done = age > 3.0;
             }
             Kind::Maze => {
                 let (intents, finished) = self.maze_tick(w, limits);
@@ -950,6 +1065,77 @@ mod tests {
             yaw.abs() > 0.3,
             "went straight into the visited cell: {yaw}"
         );
+    }
+
+    #[test]
+    fn a_hand_on_the_back_is_a_pet_not_a_startle_and_a_new_duck_is_greeted() {
+        let mut rng = fastrand::Rng::with_seed(8);
+        let mut w = standing();
+        let d = Drives::default();
+        w.t = 10.0;
+        w.observe_events(&[duck_ipc_proto::RobotEvent {
+            kind: duck_ipc_proto::EventKind::SoundNoise,
+            id: None,
+        }]);
+        assert_eq!(score(Kind::Startle, &w, &d, &mut rng, None), Some(1.5));
+        w.observe_events(&[duck_ipc_proto::RobotEvent {
+            kind: duck_ipc_proto::EventKind::PetStart,
+            id: None,
+        }]);
+        assert!(
+            score(Kind::Startle, &w, &d, &mut rng, None).is_none(),
+            "petting is not a threat"
+        );
+        assert_eq!(score(Kind::Petted, &w, &d, &mut rng, None), Some(1.6));
+        let limits = Limits::for_mode(Mode::Walk, 0.3);
+        let mut pet = Active::enter(Kind::Petted, &w, &mut rng);
+        assert_eq!(
+            pet.tick(&w, limits, &mut rng).intents.sound,
+            Some(SoundTag::Coo)
+        );
+        w.observe_events(&[duck_ipc_proto::RobotEvent {
+            kind: duck_ipc_proto::EventKind::PetEnd,
+            id: None,
+        }]);
+        w.t = 12.0;
+        assert!(pet.tick(&w, limits, &mut rng).done);
+
+        w.observe_events(&[duck_ipc_proto::RobotEvent {
+            kind: duck_ipc_proto::EventKind::DuckSeen,
+            id: Some(3),
+        }]);
+        assert_eq!(score(Kind::Greet, &w, &d, &mut rng, None), Some(1.4));
+        let mut greet = Active::enter(Kind::Greet, &w, &mut rng);
+        assert_eq!(
+            greet.tick(&w, limits, &mut rng).intents.sound,
+            Some(SoundTag::Greet),
+            "a stranger"
+        );
+        w.known_ducks.insert(3);
+        w.greet_pending = Some((3, false));
+        let mut again = Active::enter(Kind::Greet, &w, &mut rng);
+        assert_eq!(
+            again.tick(&w, limits, &mut rng).intents.sound,
+            Some(SoundTag::Chirp),
+            "a friend"
+        );
+
+        assert!(
+            score(Kind::Dance, &w, &d, &mut rng, None).is_none(),
+            "no beat yet"
+        );
+        for k in 0..4 {
+            w.t = 20.0 + 0.5 * k as f64;
+            w.observe_events(&[duck_ipc_proto::RobotEvent {
+                kind: duck_ipc_proto::EventKind::Beat,
+                id: None,
+            }]);
+        }
+        assert!(score(Kind::Dance, &w, &d, &mut rng, None).unwrap() > 0.9);
+        let mut dance = Active::enter(Kind::Dance, &w, &mut rng);
+        assert!(dance.tick(&w, limits, &mut rng).intents.pose.is_some());
+        w.t = 30.0;
+        assert!(dance.tick(&w, limits, &mut rng).done, "the music stopped");
     }
 
     #[test]

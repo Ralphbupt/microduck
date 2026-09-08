@@ -6,7 +6,9 @@
 
 use std::collections::HashMap;
 
-use duck_ipc_proto::{RobotState, TofFrame};
+use std::collections::HashSet;
+
+use duck_ipc_proto::{EventKind, RobotEvent, RobotState, TofFrame};
 use kinematics::tof::{COLS, Posture, ROWS, Reprojector, Zone};
 
 /// ST status codes `tofd` marks as a trustworthy range — the same set the theremin's hand
@@ -212,6 +214,20 @@ pub struct World {
     pub grid: NoveltyGrid,
     /// Whether a state frame has ever arrived.
     pub have_state: bool,
+    /// Events, as ages: the robot time of the last one of each kind.
+    pub last_noise: Option<f64>,
+    pub last_voice: Option<f64>,
+    pub petting_since: Option<f64>,
+    pub pet_ended: Option<f64>,
+    /// Ducks by beacon id: when each was last seen; and every duck ever met.
+    pub ducks: HashMap<u16, f64>,
+    pub known_ducks: HashSet<u16>,
+    /// A duck just seen and not yet greeted: its id, and whether it is a stranger.
+    pub greet_pending: Option<(u16, bool)>,
+    /// Recent beat times, newest last (a handful are kept).
+    pub beats: Vec<f64>,
+    /// Robot time the robot last had company (a duck or a voice); `None` = never.
+    pub last_company: Option<f64>,
 }
 
 impl World {
@@ -248,6 +264,86 @@ impl World {
         if self.standing() {
             self.grid.visit(self.odom[0], self.odom[1], self.t);
         }
+        // `s.events` is deliberately not folded in here: the daemon accumulates events across
+        // frames and hands them to `observe_events` itself, so none is lost or counted twice.
+    }
+
+    /// Fold in events — from a state frame, or injected on a bench.
+    pub fn observe_events(&mut self, events: &[RobotEvent]) {
+        for e in events {
+            match e.kind {
+                EventKind::SoundNoise => self.last_noise = Some(self.t),
+                EventKind::SoundVoice => {
+                    self.last_voice = Some(self.t);
+                    self.last_company = Some(self.t);
+                }
+                EventKind::PetStart => {
+                    self.petting_since = Some(self.t);
+                    self.pet_ended = None;
+                }
+                EventKind::PetEnd => {
+                    self.petting_since = None;
+                    self.pet_ended = Some(self.t);
+                }
+                EventKind::DuckSeen => {
+                    if let Some(id) = e.id {
+                        let stranger = !self.known_ducks.contains(&id);
+                        self.ducks.insert(id, self.t);
+                        self.greet_pending = Some((id, stranger));
+                        self.last_company = Some(self.t);
+                    }
+                }
+                EventKind::DuckLost => {
+                    if let Some(id) = e.id {
+                        self.ducks.remove(&id);
+                    }
+                }
+                EventKind::Beat => {
+                    self.beats.push(self.t);
+                    if self.beats.len() > 8 {
+                        self.beats.remove(0);
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn petting(&self) -> bool {
+        self.petting_since.is_some()
+    }
+
+    /// Seconds since the last loud noise; `None` = never.
+    pub fn noise_age(&self) -> Option<f64> {
+        self.last_noise.map(|t| self.t - t)
+    }
+
+    pub fn voice_age(&self) -> Option<f64> {
+        self.last_voice.map(|t| self.t - t)
+    }
+
+    /// Ducks heard from in the last ten seconds.
+    pub fn company(&self) -> usize {
+        self.ducks.values().filter(|&&t| self.t - t < 10.0).count()
+    }
+
+    /// How long since anyone was around; from boot if never.
+    pub fn alone_for(&self) -> f64 {
+        self.t - self.last_company.unwrap_or(0.0)
+    }
+
+    /// The beat period, if beats have been arriving steadily (three in the last four seconds).
+    pub fn beat_period(&self) -> Option<f64> {
+        let recent: Vec<f64> = self
+            .beats
+            .iter()
+            .copied()
+            .filter(|&t| self.t - t < 4.0)
+            .collect();
+        if recent.len() < 3 {
+            return None;
+        }
+        let gaps: Vec<f64> = recent.windows(2).map(|w| w[1] - w[0]).collect();
+        Some(gaps.iter().sum::<f64>() / gaps.len() as f64)
     }
 
     /// Fold in a depth frame, reprojected through the head pose the state stream reports.
@@ -393,6 +489,40 @@ mod tests {
         assert_eq!(o.nearest(), Some(0.4));
         let stale = summarise(&zones, 2.0);
         assert!(!stale.fresh());
+    }
+
+    #[test]
+    fn events_become_ages_company_and_beats() {
+        let mut w = World {
+            t: 100.0,
+            ..Default::default()
+        };
+        let ev = |kind, id| RobotEvent { kind, id };
+        w.observe_events(&[
+            ev(EventKind::PetStart, None),
+            ev(EventKind::DuckSeen, Some(7)),
+        ]);
+        assert!(w.petting());
+        assert_eq!(w.company(), 1);
+        assert_eq!(w.greet_pending, Some((7, true)), "a stranger");
+        w.known_ducks.insert(7);
+        w.t = 101.0;
+        w.observe_events(&[
+            ev(EventKind::PetEnd, None),
+            ev(EventKind::DuckSeen, Some(7)),
+        ]);
+        assert!(!w.petting());
+        assert_eq!(w.greet_pending, Some((7, false)), "a friend now");
+        for k in 0..4 {
+            w.t = 102.0 + 0.5 * k as f64;
+            w.observe_events(&[ev(EventKind::Beat, None)]);
+        }
+        assert!((w.beat_period().unwrap() - 0.5).abs() < 1e-9);
+        w.t = 110.0;
+        assert!(w.beat_period().is_none(), "beats went stale");
+        assert!((w.alone_for() - 9.0).abs() < 1e-9);
+        w.observe_events(&[ev(EventKind::DuckLost, Some(7))]);
+        assert_eq!(w.company(), 0);
     }
 
     #[test]

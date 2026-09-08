@@ -264,6 +264,8 @@ impl Arbiter {
             Kind::Stretch | Kind::Ruffle | Kind::Preen | Kind::Sneeze => 20.0,
             Kind::GroundPick | Kind::Zoomies => 40.0,
             Kind::Startle => 3.0,
+            Kind::Lonely => 120.0,
+            Kind::Dance => 10.0,
             _ => 0.0,
         };
         if cool > 0.0 {

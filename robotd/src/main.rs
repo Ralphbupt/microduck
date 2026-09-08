@@ -1718,6 +1718,12 @@ async fn control_loop<T: RobotIo>(
         "control loop running"
     );
 
+    // Events this tick will carry on its state frame (sounds, petting, ducks, beats).
+
+    let mut tick_events: Vec<proto::RobotEvent> = Vec::new();
+
+    let mut last_beat: Option<i64> = None;
+
     let mut ticker = tokio::time::interval(period);
     // `Skip`, not `Burst` and not `Delay`.
     //
@@ -2089,6 +2095,13 @@ async fn control_loop<T: RobotIo>(
             // sound cue, and cooing while face-down would be worse than staying quiet.
             if let Some(pet) = pet.as_ref() {
                 while let Some(ev) = pet.try_recv_event() {
+                    tick_events.push(proto::RobotEvent {
+                        kind: match ev {
+                            pet_detect::PettingEvent::Start => proto::EventKind::PetStart,
+                            pet_detect::PettingEvent::End => proto::EventKind::PetEnd,
+                        },
+                        id: None,
+                    });
                     match ev {
                         pet_detect::PettingEvent::Start => {
                             let calm =
@@ -2103,10 +2116,17 @@ async fn control_loop<T: RobotIo>(
                         pet_detect::PettingEvent::End => tracing::debug!("petting ended"),
                     }
                 }
-                // Ambient sound events have no consumer until the autonomous brain arrives;
-                // surfaced at debug so mic tuning on a bench has data to look at.
+                // Ambient sound events go to the state stream, where the autonomous brain
+                // (`braind`) reads them; debug-logged so mic tuning on a bench has data too.
                 while let Some(ev) = pet.try_recv_sound() {
                     tracing::debug!(event = ?ev, "ambient sound");
+                    tick_events.push(proto::RobotEvent {
+                        kind: match ev {
+                            pet_detect::worker::SoundEvent::Noise => proto::EventKind::SoundNoise,
+                            pet_detect::worker::SoundEvent::Voice => proto::EventKind::SoundVoice,
+                        },
+                        id: None,
+                    });
                 }
             }
         }
@@ -2857,6 +2877,28 @@ async fn control_loop<T: RobotIo>(
                 ensemble.heard(&heard, tick_start);
             }
             let tick = ensemble.tick(tick_start);
+            let (arrived, left) = ensemble.take_duck_events();
+            tick_events.extend(arrived.into_iter().map(|id| proto::RobotEvent {
+                kind: proto::EventKind::DuckSeen,
+                id: Some(id),
+            }));
+            tick_events.extend(left.into_iter().map(|id| proto::RobotEvent {
+                kind: proto::EventKind::DuckLost,
+                id: Some(id),
+            }));
+            // The beat: once per whole beat while singing, so a dance can lock to it.
+            if let Some((_, beats)) = tick.singing {
+                let whole = beats.floor() as i64;
+                if last_beat != Some(whole) {
+                    last_beat = Some(whole);
+                    tick_events.push(proto::RobotEvent {
+                        kind: proto::EventKind::Beat,
+                        id: None,
+                    });
+                }
+            } else {
+                last_beat = None;
+            }
             if let Some(advertise) = tick.advertise {
                 // Handed to whatever `btd` connection is subscribed. Only when it changes, which
                 // is about once a beat rather than fifty times a second.
@@ -3011,8 +3053,10 @@ async fn control_loop<T: RobotIo>(
                     &sensors.positions,
                 ))),
                 skeleton: mapping::skeleton_at(&sensors.positions),
+                events: std::mem::take(&mut tick_events),
             });
         }
+        tick_events.clear();
 
         let ticks = state.ticks.fetch_add(1, Ordering::Relaxed) + 1;
         state.last_tick_us.store(
@@ -3324,6 +3368,7 @@ async fn handle(
     let mut beacons: Option<tokio::sync::broadcast::Receiver<proto::ChoraleAdvertise>> = None;
     let mut decimate = Duration::ZERO;
     let mut last_sent: Option<Instant> = None;
+    let mut held_events: Vec<proto::RobotEvent> = Vec::new();
 
     loop {
         // Three things can happen: a request arrives, a state frame is due for a subscriber, or a
@@ -3382,16 +3427,23 @@ async fn handle(
                     }
                     received = rx.recv() => {
                         match received {
-                            Ok(state) => {
+                            Ok(mut state) => {
                                 // Decimate per subscriber: a dashboard asking for 10 Hz
                                 // should not cost what a digital twin asking for 50 does.
+                                // Events on skipped frames ride along on the next one sent.
                                 let due = last_sent
                                     .map(|at| at.elapsed() >= decimate)
                                     .unwrap_or(true);
                                 if due {
                                     last_sent = Some(Instant::now());
+                                    if !held_events.is_empty() {
+                                        held_events.append(&mut state.events);
+                                        state.events = std::mem::take(&mut held_events);
+                                    }
                                     write_line(&mut write_half, &proto::Request::notify_state(&state))
                                         .await?;
+                                } else {
+                                    held_events.append(&mut state.events);
                                 }
                             }
                             // Lagged: the client fell behind and lost frames. That is the

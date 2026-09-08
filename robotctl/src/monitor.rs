@@ -4214,6 +4214,7 @@ mod tests {
             imu: None,
             frames: None,
             skeleton: Vec::new(),
+            events: Vec::new(),
         }
     }
 }

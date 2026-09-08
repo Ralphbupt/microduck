@@ -179,6 +179,9 @@ pub struct Chorale {
     piece_id: u8,
     state: State,
     peers: Vec<Peer>,
+    /// Ducks whose beacon appeared / went stale since the last `take_duck_events`.
+    arrivals: Vec<u16>,
+    departures: Vec<u16>,
     /// A piece the operator has pinned — `robotctl chorale --piece`, or the
     /// `DUCK_CHORALE_PIECE` environment as the standing fallback. Only consulted when *this*
     /// duck conducts — a follower sings what the beacon names, because an ensemble where
@@ -222,6 +225,8 @@ impl Chorale {
             }),
             state: State::Off,
             peers: Vec::new(),
+            arrivals: Vec::new(),
+            departures: Vec::new(),
             advertised: None,
             listening: false,
         }
@@ -291,6 +296,7 @@ impl Chorale {
                     from = %heard.from,
                     "chorale: another duck"
                 );
+                self.arrivals.push(peer.beacon.id);
                 self.peers.push(peer);
             }
         }
@@ -379,7 +385,21 @@ impl Chorale {
     }
 
     /// One tick. Cheap enough for every one; only the beacon is rate-limited, by changing rarely.
+    /// Ducks that arrived and ducks that went quiet since the last call — for the state
+    /// stream's events.
+    pub fn take_duck_events(&mut self) -> (Vec<u16>, Vec<u16>) {
+        (
+            std::mem::take(&mut self.arrivals),
+            std::mem::take(&mut self.departures),
+        )
+    }
+
     pub fn tick(&mut self, now: Instant) -> Tick {
+        for peer in &self.peers {
+            if now.saturating_duration_since(peer.at) >= PEER_STALE {
+                self.departures.push(peer.beacon.id);
+            }
+        }
         self.peers
             .retain(|peer| now.saturating_duration_since(peer.at) < PEER_STALE);
 
