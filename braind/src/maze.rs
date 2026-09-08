@@ -11,8 +11,9 @@ use std::collections::HashMap;
 pub const CELL_M: f64 = 0.8;
 
 /// A heading along the maze's axes. `+x` is where the duck faces on boot.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum Dir {
+    #[default]
     East,
     North,
     West,
@@ -106,12 +107,6 @@ pub struct MazeMap {
     pub moves: u32,
     /// Every cell entered, in order — the route, for drawing.
     pub path: Vec<(i32, i32)>,
-}
-
-impl Default for Dir {
-    fn default() -> Self {
-        Dir::East
-    }
 }
 
 /// What the explorer wants next.
@@ -482,14 +477,17 @@ mod tests {
         );
     }
 
-    /// A 3x3 maze as a wall oracle:
-    ///   +--+--+  +      exit north of (2,2)
-    ///   |     |  |
-    ///   +  +  +  +
-    ///   |  |     |
-    ///   +  +--+  +
-    ///   |        |
-    ///   +--+--+--+
+    /// A 3x3 maze as a wall oracle (exit north of (2,2)):
+    ///
+    /// ```text
+    /// +--+--+  +
+    /// |     |  |
+    /// +  +  +  +
+    /// |  |     |
+    /// +  +--+  +
+    /// |        |
+    /// +--+--+--+
+    /// ```
     fn oracle(cell: (i32, i32), d: Dir) -> Side {
         let (x, y) = cell;
         let outside = |c: (i32, i32)| !(0..3).contains(&c.0) || !(0..3).contains(&c.1);

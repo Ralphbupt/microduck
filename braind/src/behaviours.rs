@@ -8,7 +8,7 @@ use duck_ipc_proto::{Skill, SoundTag};
 
 use crate::drives::Drives;
 use crate::maze::{Dir, MazeMap, Plan, Side};
-use crate::world::{Mode, Radar, World};
+use crate::world::{Mode, Radar, Stale, World};
 
 /// What a behaviour wants sent this tick. `None` fields are "leave it alone".
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -252,15 +252,11 @@ pub fn score(
             }
         }
         Kind::Dance => {
-            if w.beat_period().is_none() {
-                return None;
-            }
+            w.beat_period()?;
             0.9 + 0.2 * d.energy + jitter(0.1)
         }
         Kind::Greet => {
-            if w.greet_pending.is_none() {
-                return None;
-            }
+            w.greet_pending?;
             1.4
         }
         Kind::Lonely => {
@@ -718,7 +714,7 @@ impl Active {
                     let near = if w.radar.fresh(bins[0], w.t) {
                         Ok(w.radar.axis[bins[0]])
                     } else {
-                        Err(())
+                        Err(Stale)
                     };
                     // Open = the sensor sees past this cell's edge into the next cell. The
                     // edge distance comes from where we actually stand, not the cell centre.
@@ -786,7 +782,7 @@ impl Active {
                     self.anchor = [pos[0], pos[1]];
                     // Squaring up (no move planned) goes back to planning.
                     next(self, if self.go.is_some() { 5 } else { 0 });
-                } else if err > 0.0 || err < -2.6 {
+                } else if !(-2.6..=0.0).contains(&err) {
                     i.twist = [0.0, 0.0, TURN_RATE];
                 } else {
                     i.twist = [limits.linear, 0.0, -RIGHT_ARC_RATE];

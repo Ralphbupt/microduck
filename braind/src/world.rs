@@ -115,6 +115,10 @@ pub const RADAR_MAX_AGE_S: f64 = 3.0;
 /// What "saw nothing" means in metres: the sensor's useful reach.
 pub const TOF_REACH_M: f64 = 4.0;
 
+/// A radar bin nobody has looked at lately.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Stale;
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Radar {
     /// Nearest hit per bin, horizontal metres; `None` = looked and saw nothing in range.
@@ -158,12 +162,13 @@ impl Radar {
         now - self.at[bin] <= RADAR_MAX_AGE_S
     }
 
-    /// How deep the sensor saw across `bins`; `Err` if any is stale.
-    pub fn deepest(&self, bins: impl IntoIterator<Item = usize>, now: f64) -> Result<f64, ()> {
+    /// How deep the sensor saw across `bins`; `Err(Stale)` if any bin has not been looked at
+    /// recently.
+    pub fn deepest(&self, bins: impl IntoIterator<Item = usize>, now: f64) -> Result<f64, Stale> {
         let mut best = 0.0f64;
         for b in bins {
             if !self.fresh(b, now) {
-                return Err(());
+                return Err(Stale);
             }
             best = best.max(self.far[b]);
         }
@@ -175,11 +180,11 @@ impl Radar {
         &self,
         bins: impl IntoIterator<Item = usize>,
         now: f64,
-    ) -> Result<Option<f64>, ()> {
+    ) -> Result<Option<f64>, Stale> {
         let mut best: Option<f64> = None;
         for b in bins {
             if !self.fresh(b, now) {
-                return Err(());
+                return Err(Stale);
             }
             if let Some(r) = self.range[b] {
                 best = Some(best.map_or(r, |x: f64| x.min(r)));
