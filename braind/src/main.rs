@@ -62,7 +62,8 @@ struct Args {
     #[arg(long)]
     events_from: Option<PathBuf>,
 
-    /// Where the maze mission writes the map it built (`braind-maze.txt` and `.svg`).
+    /// Where the maze mission writes the map it built (`braind-maze.txt` and `.svg`), and
+    /// where the room map (`braind-room.svg`) is written every ten seconds.
     #[arg(long, default_value = "/tmp")]
     maze_map_dir: PathBuf,
 
@@ -267,6 +268,7 @@ fn main() -> std::process::ExitCode {
     let mut last_log = Instant::now();
     let mut last_map_log = Instant::now();
     let mut last_map_moves = u32::MAX;
+    let mut last_room_write = Instant::now();
     let mut last_twist_sent = false;
     let mut last_status = Status::Off;
 
@@ -302,6 +304,24 @@ fn main() -> std::process::ExitCode {
             && let Some((id, _)) = world.greet_pending.take()
         {
             world.known_ducks.insert(id);
+        }
+        // The room map: written out every ten seconds while anything is known.
+        if last_room_write.elapsed() >= Duration::from_secs(10) && world.room.integrated > 0 {
+            last_room_write = Instant::now();
+            let target = arbiter.wander_target();
+            let _ = std::fs::write(
+                args.maze_map_dir.join("braind-room.svg"),
+                world
+                    .room
+                    .svg((world.odom[0], world.odom[1], world.yaw), target),
+            );
+            let (free, occ) = world.room.counts();
+            tracing::info!(
+                floor_m2 = format!("{:.1}", free as f64 * braind::room::RES * braind::room::RES),
+                obstacles = occ,
+                "room map\n{}",
+                world.room.ascii((world.odom[0], world.odom[1]))
+            );
         }
         // The maze mission's map: printed every few moves, written out when it ends.
         if let Some(map) = arbiter.maze_map() {

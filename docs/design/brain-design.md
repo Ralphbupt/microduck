@@ -239,6 +239,21 @@ a rule in the code: the yaw command is trustworthy only inside ±0.6 rad/s (righ
 walking arcs); the gait sometimes does not start at 0.3 m/s from a still stand (a yaw nudge
 starts it); the sensor's 30° bins graze the corridor's own walls (judge along the ±8° axis).
 
+### 10.2 The room map (2026-09-09)
+
+`room.rs`: an occupancy grid of 0.1 m cells, sparse so it grows from wherever the duck
+booted, log-odds per cell — a hit raises it, every ray through it lowers it, a level beam
+that saw nothing clears 2 m. Fed from every fresh depth frame while standing, placed in
+the world by odometry (no correction: on feet the drift is a few percent, which a room
+tolerates; the maze needed better and got wall-ruler corrections of its own).
+
+Wander became frontier exploration: every two seconds a breadth-first search over walkable
+cells (free, and not within 0.2 m of anything occupied) to the nearest free cell touching
+the unknown, then steering at the waypoint 0.35 m along the path. With no frontier — nothing
+mapped yet, or everything seen — the novelty heading stands. The map is written to
+`braind-room.svg` every ten seconds and printed as ASCII in the log; `make_room.py` makes a
+two-room flat with a doorway and furniture for the plant (`--model room`).
+
 ## 11. Open
 
 - Whether `braind`'s config belongs in `robotd.toml` under `[brain]` (one file to edit) or its

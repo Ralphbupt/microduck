@@ -200,6 +200,8 @@ pub struct World {
     /// A mission flag: solve the maze the plant put us in (`braind --maze`).
     pub maze: bool,
     pub radar: Radar,
+    /// The room as an occupancy grid, grown from every depth frame.
+    pub room: crate::room::RoomMap,
     /// Robot time, seconds (`robot.state.t`).
     pub t: f64,
     pub mode: Mode,
@@ -371,6 +373,20 @@ impl World {
 
         // The radar: which bins this frame covered, and the nearest hit in each.
         let sensor = reprojector.sensor_in_trunk(self.head);
+        // The room map: the same frame, placed in the world by odometry. Only while standing
+        // and only fresh frames — a frame from mid-rise paints the ceiling onto the floor.
+        if self.standing() && age_s <= TOF_STALE_S {
+            let mut dirs = [[0.0; 3]; ROWS * COLS];
+            for (i, beam) in reprojector.beams().iter().enumerate() {
+                dirs[i] = sensor.quat.rotate(*beam);
+            }
+            self.room.integrate(
+                (self.odom[0], self.odom[1], self.yaw),
+                sensor.pos,
+                &dirs,
+                &zones,
+            );
+        }
         let mut covered = [false; RADAR_BINS];
         let mut nearest: [Option<f64>; RADAR_BINS] = [None; RADAR_BINS];
         let mut deepest = [0.0f64; RADAR_BINS];

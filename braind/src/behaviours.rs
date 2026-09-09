@@ -295,6 +295,10 @@ pub struct Active {
     retries: u32,
     /// Robot time since which the level beam straight ahead has read under 0.3 m.
     blocked_since: Option<f64>,
+    /// Wander: the path to the current frontier target (world points), and when it was
+    /// planned; `None` = no frontier known, fall back to a novelty heading.
+    pub plan: Option<Vec<(f64, f64)>>,
+    planned_at: f64,
     look: Option<Dir>,
     go: Option<Dir>,
     exiting: bool,
@@ -326,6 +330,8 @@ impl Active {
             kicked: false,
             retries: 0,
             blocked_since: None,
+            plan: None,
+            planned_at: f64::NEG_INFINITY,
             look: None,
             go: None,
             exiting: false,
@@ -381,6 +387,29 @@ impl Active {
             }
             Kind::Wander => {
                 let o = &w.obstacles;
+                // Frontier exploration: every couple of seconds, a path over the known floor
+                // to the nearest edge of the unknown; steer at the waypoint ~0.4 m along it.
+                // With no frontier (nothing mapped yet, or everything seen) the novelty
+                // heading from `enter` stands.
+                if w.t - self.planned_at > 2.0 {
+                    self.planned_at = w.t;
+                    self.plan = w.room.path_to_frontier((w.odom[0], w.odom[1]), 0.5);
+                    if let Some(path) = &self.plan {
+                        tracing::debug!(len = path.len(), target = ?path.last(), "wander: frontier");
+                    }
+                }
+                if let Some(path) = &self.plan {
+                    let (x, y) = (w.odom[0], w.odom[1]);
+                    // The first point on the path at least 0.35 m away, else its end.
+                    let aim = path
+                        .iter()
+                        .copied()
+                        .find(|&(px, py)| (px - x).hypot(py - y) >= 0.35)
+                        .or_else(|| path.last().copied());
+                    if let Some((ax, ay)) = aim {
+                        self.target_yaw = (ay - y).atan2(ax - x);
+                    }
+                }
                 let err = wrap(self.target_yaw - w.yaw);
                 // Steering while walking stays inside ±0.6: beyond that the sign of the
                 // policy's response is not to be trusted (sim-backend-design.md §9).
@@ -397,10 +426,10 @@ impl Active {
                 i.twist = [limits.linear * speed, 0.0, steer];
                 // Look where we go, slightly down: the sensor must keep seeing the floor.
                 i.head = Some([0.0, 0.15, (err * 0.5).clamp(-0.8, 0.8), 0.0]);
-                if age > 5.0 && rng.f64() < 0.01 {
+                if self.plan.is_none() && age > 5.0 && rng.f64() < 0.01 {
                     self.target_yaw = pick_heading(w, rng);
                 }
-                done = age > 25.0 || speed == 0.0 && age > 1.0;
+                done = age > 40.0 || speed == 0.0 && age > 1.0;
             }
             Kind::TurnInPlace => {
                 let err = wrap(self.target_yaw - w.yaw);

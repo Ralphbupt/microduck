@@ -94,6 +94,14 @@ impl Arbiter {
         self.active.as_ref().map(|a| a.kind)
     }
 
+    /// Where Wander is heading, if it is following a frontier path.
+    pub fn wander_target(&self) -> Option<(f64, f64)> {
+        match &self.active {
+            Some(a) if a.kind == Kind::Wander => a.plan.as_ref().and_then(|p| p.last().copied()),
+            _ => None,
+        }
+    }
+
     /// The maze map while the mission runs (for the log), else the last one.
     pub fn maze_map(&self) -> Option<&crate::maze::MazeMap> {
         match &self.active {

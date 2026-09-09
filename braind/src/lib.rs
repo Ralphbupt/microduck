@@ -8,6 +8,7 @@ pub mod arbiter;
 pub mod behaviours;
 pub mod drives;
 pub mod maze;
+pub mod room;
 pub mod world;
 
 pub use arbiter::{Arbiter, Decision, Status};
