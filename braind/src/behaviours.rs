@@ -500,7 +500,7 @@ impl Active {
             Kind::Nap => {
                 // Sit once, then be still. Waking is the arbiter's job (energy, a startle).
                 if !self.fired && w.standing() {
-                    i.skill = Some(Skill::SitToggle);
+                    i.skill = Some(Skill::from("sit_toggle"));
                     self.fired = true;
                 }
                 i.head = Some([0.6, 0.5, 0.0, 0.0]);
@@ -581,7 +581,7 @@ impl Active {
             Kind::GroundPick => {
                 match self.phase {
                     0 => {
-                        i.skill = Some(Skill::GroundPick);
+                        i.skill = Some(Skill::from("ground_pick"));
                         self.phase = 1;
                     }
                     1 => {
@@ -1171,14 +1171,14 @@ mod tests {
         let mut nap = Active::enter(Kind::Nap, &w, &mut rng);
         assert_eq!(
             nap.tick(&w, limits, &mut rng).intents.skill,
-            Some(Skill::SitToggle)
+            Some(Skill::from("sit_toggle"))
         );
         assert_eq!(nap.tick(&w, limits, &mut rng).intents.skill, None);
 
         let mut pick = Active::enter(Kind::GroundPick, &w, &mut rng);
         assert_eq!(
             pick.tick(&w, limits, &mut rng).intents.skill,
-            Some(Skill::GroundPick)
+            Some(Skill::from("ground_pick"))
         );
         w.policy = "ground_pick".into();
         assert!(!pick.tick(&w, limits, &mut rng).done);

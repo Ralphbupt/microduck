@@ -1,4 +1,4 @@
-//! `robotd --sim` against the MuJoCo plant, end to end: a seated duck is enabled, rises,
+//! `robotd --plant` against the MuJoCo plant, end to end: a seated duck is enabled, rises,
 //! walks forward on command, and stops. The daemon-level walking acceptance that
 //! `docs/design/sim-backend-design.md` §6 promises.
 //!
@@ -215,7 +215,7 @@ fn a_seated_duck_is_enabled_rises_walks_and_stops() {
         .spawn()
         .expect("uv run plant_server.py");
     let robotd = Command::new(env!("CARGO_BIN_EXE_robotd"))
-        .arg("--sim")
+        .arg("--plant")
         .arg(&plant_sock)
         .arg("--socket")
         .arg(&robot_sock)

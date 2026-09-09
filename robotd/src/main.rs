@@ -1129,7 +1129,8 @@ fn spawn_control_thread(
                 // condition someone fixes by starting it, not one to abandon the loop over.
                 runtime.block_on(async move {
                     if let Some(io) = open_sim_waiting(&socket, &state).await {
-                        control_loop(io, state, intents, params, params_path, period, poweroff).await;
+                        control_loop(io, state, intents, params, params_path, period, poweroff)
+                            .await;
                     }
                 });
                 return;

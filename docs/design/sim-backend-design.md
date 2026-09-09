@@ -1,4 +1,4 @@
-# `robotd --sim` — a MuJoCo robot behind `RobotIo`
+# `robotd --plant` — a MuJoCo robot behind `RobotIo`
 
 Status: draft · Date: 2026-09-07 · Owner: liko
 
@@ -6,6 +6,13 @@ Fills the row [`robotd-design.md`](robotd-design.md) §8 defers as "MuJoCo backe
 `RemoteIo` protocol", and the decision-table row "sim after slice 2". `--fake` was the
 stand-in ("there is no simulator yet, and this is what stands in for one" — `robotd --help`);
 this is the simulator.
+
+**Two simulators, since 2026-09.** Upstream landed its own the same week this was written:
+`robotd --sim host:port` → `duck_control::sim::RemoteIo` → `microduck_rl`'s `duck-body`,
+designed for containers and many ducks (`docs/design/simulation.md`). This one stayed as
+`robotd --plant SOCKET` → `robotd::sim::SimIo` → `scripts/plant_server.py`: single duck,
+lockstep, unix socket, with the depth-sensor server, the maze and room scenes, and the
+recorder the brain's bench uses. Same seam, two plants; the brain does not know which.
 
 ## 1. Why
 
@@ -168,7 +175,7 @@ gets tested.
 
 From the audit of `main.rs`:
 
-1. `Args`: `--sim <SOCKET>` (`Option<PathBuf>`, `conflicts_with = "fake"`), beside `--fake`.
+1. `Args`: `--plant <SOCKET>` (`Option<PathBuf>`, `conflicts_with = "fake"`), beside `--fake`.
 2. `spawn_control_thread`: a third arm — `control_loop(SimIo::connect_waiting(..), …)`. The
    third monomorphisation of `control_loop`; nothing else in the loop changes.
 3. `SimIo::connect_waiting` retries on `STARTUP_RETRY_INTERVAL` and publishes
@@ -190,7 +197,7 @@ uv run mjpython scripts/plant_server.py --socket /tmp/plant.sock --model rollers
 
 # terminal 2 — the daemon, from microduck
 ORT_DYLIB_PATH=…/libonnxruntime.1.24.4.dylib \
-  cargo run -p robotd -- --sim /tmp/plant.sock --socket /tmp/robotd.sock --params dev/robotd-mac.toml
+  cargo run -p robotd -- --plant /tmp/plant.sock --socket /tmp/robotd.sock --params dev/robotd-mac.toml
 
 # terminal 3 — drive it
 cargo run -p padd -- --socket /tmp/robotd.sock          # a gamepad
@@ -210,7 +217,7 @@ headless runs use plain `python`. `dev/robotd-mac.toml` points the seven `[polic
   `read`, `step` ×100 with the home pose, asserts the trunk settles near `STAND_Z` and
   gravity near `[0,0,−1]`; `torque off` makes it fall; `reset prone` puts it on its face.
 - **End to end** (`robotd/tests/sim.rs`, `#[ignore]` unless `MICRODUCK_PLANT` names a plant
-  executable): spawn the plant headless, spawn `robotd --sim`, wait healthy, `robot.enable`,
+  executable): spawn the plant headless, spawn `robotd --plant`, wait healthy, `robot.enable`,
   `robot.move vx=0.2` for 5 s, assert `odom.position[0] > 0.5` and `safety.fallen == false`.
   This is the daemon-level walking acceptance that has never existed.
 - **Golden traces** (later): record `(targets, frame)` per tick; replay through `SimIo` with
@@ -225,7 +232,7 @@ headless runs use plain `python`. `dev/robotd-mac.toml` points the seven `[polic
 | lockstep, one `step` per `write` | determinism; the tick budget is bounded by physics cost, not wall time |
 | NDJSON, not binary, not JSON-RPC | inspectable; one peer, one request in flight |
 | `SimIo` in `robotd`, blocking `UnixStream` | `duck-control` speaks to no socket; the control thread is blocking by design |
-| `--sim` a flag, not a params key | a laptop concern, like `--fake`; the board never sees it |
+| `--plant` a flag, not a params key | a laptop concern, like `--fake`; the board never sees it |
 | position-servo plant first, BAM second | the deployment twin is the conservative model; which is right is a hardware question |
 | the plant speaks `tofd`'s protocol | a brain written against `tof.frame` runs unchanged on both |
 | ground truth in the frame, ignored by `robotd` | tests need it; odometry must not be fed it |
@@ -260,7 +267,7 @@ detector · running the plant on the board (it is not for the board).
 
 ## 10. Status (2026-09-07)
 
-Built and passing: `SimIo` (`robotd/src/sim.rs`, wire tests), `--sim`, the plant with both
+Built and passing: `SimIo` (`robotd/src/sim.rs`, wire tests), `--plant`, the plant with both
 actuators and the `tof.stream` server, `microduck_rl/tests/test_plant_server.py` (9), and
 `robotd/tests/sim.rs` — seated boot → `robot.enable` → rise → stand → walk 0.3 m/s → stop,
 healthy at 50 Hz, `#[ignore]` unless `MICRODUCK_RL` is set. Roller mode drives at the 0.6

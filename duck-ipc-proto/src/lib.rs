@@ -5562,7 +5562,6 @@ mod tests {
             odom: OdomState::default(),
             theremin: None,
             chorale: None,
-            events: Vec::new(),
         };
         let down = serde_json::to_string(&state).unwrap();
         assert!(!down.contains("theremin"), "{down}");
@@ -5625,7 +5624,6 @@ mod tests {
             odom: OdomState::default(),
             theremin: None,
             chorale: None,
-            events: Vec::new(),
         };
 
         let line = serde_json::to_string(&Request::notify_state(&state)).unwrap();

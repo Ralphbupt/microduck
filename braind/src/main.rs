@@ -396,9 +396,11 @@ fn main() -> std::process::ExitCode {
                 let _ = prompt.notify(&Call::RobotMouth(proto::MouthParams { open }));
             }
             if let Some(skill) = i.skill {
-                match prompt.call(&Call::RobotDo(proto::DoParams { skill })) {
-                    Ok(r) => tracing::info!(?skill, reply = ?r.result, "skill"),
-                    Err(e) => tracing::warn!(?skill, error = %e, "skill"),
+                match prompt.call(&Call::RobotDo(proto::DoParams {
+                    skill: skill.clone(),
+                })) {
+                    Ok(r) => tracing::info!(%skill, reply = ?r.result, "skill"),
+                    Err(e) => tracing::warn!(%skill, error = %e, "skill"),
                 }
             }
             if let Some(tag) = i.sound {

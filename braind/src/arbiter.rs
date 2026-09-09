@@ -202,7 +202,7 @@ impl Arbiter {
             self.sent([0.0; 3], w.t);
             let mut up = Active::neutral();
             if w.sitting() {
-                up.skill = Some(duck_ipc_proto::Skill::SitToggle);
+                up.skill = Some(duck_ipc_proto::Skill::from("sit_toggle"));
             }
             return Decision {
                 status: Status::Waiting,
@@ -447,7 +447,7 @@ mod tests {
         assert_eq!(d.status, Status::Active(Kind::Nap));
         assert_eq!(
             d.intents.unwrap().skill,
-            Some(duck_ipc_proto::Skill::SitToggle)
+            Some(duck_ipc_proto::Skill::from("sit_toggle"))
         );
         w.policy = "sit".into();
         let mut t = 0.1;
